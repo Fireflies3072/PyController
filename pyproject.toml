@@ -1,0 +1,25 @@
+# pyproject.toml
+
+[build-system]
+# Use setuptools as backend
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pycontroller"
+version = "0.1.0"
+description = "Controllers (PID, DeePC, etc.) for different scenarios (RocketLander, InvertedPendulum, etc.) in Python"
+readme = "README.md"
+authors = [{name = "Fireflies3072", email = "cxu338@wisc.edu"}]
+license = {file = "LICENSE"}
+requires-python = ">=3.10"
+
+dependencies = [
+    "numpy",
+    "scipy",
+    "cvxpy",
+    "gymnasium[box2d,mojoco]",
+]
+
+[tool.setuptools.packages.find]
+include = ["pycontroller*"]
