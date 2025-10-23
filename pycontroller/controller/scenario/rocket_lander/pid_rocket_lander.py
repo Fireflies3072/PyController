@@ -22,8 +22,8 @@ class PID_RocketLander(ControllerBase):
         self.Fs_theta_PID.reset()
         self.psi_PID.reset()
 
-    def update(self, measurement, target):
-        x, y, vel_x, vel_y, theta, omega = measurement
+    def update(self, state, target):
+        x, y, vel_x, vel_y, theta, omega = state
         x_target, y_target = target[0], target[1]
         dx = x - x_target
         dy = y - y_target

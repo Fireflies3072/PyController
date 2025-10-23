@@ -33,14 +33,14 @@ class MPC_RocketLander(ControllerBase):
     def reset(self, initial_state: Optional[np.ndarray] = None) -> None:
         return
 
-    def update(self, measurement, target) -> np.ndarray:
+    def update(self, state, target) -> np.ndarray:
         # Define variables
         u = cp.Variable((self.u_size, self.horizon))
         x = cp.Variable((self.x_size, self.horizon + 1))
 
         # Define objective and constraints
         cost = 0
-        constraints = [x[:, 0] == measurement]
+        constraints = [x[:, 0] == state]
         for t in range(self.horizon):
             cost += cp.quad_form(x[:, t] - target, self.Q) + cp.quad_form(u[:, t], self.R)
             constraints += [x[:, t + 1] == self.A @ x[:, t] + self.B @ u[:, t],

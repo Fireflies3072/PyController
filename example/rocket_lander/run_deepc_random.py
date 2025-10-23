@@ -13,20 +13,12 @@ T_f = 10
 
 # --- Environment Setup ---
 env = gym.make("coco_rocket_lander/RocketLander-v0", render_mode="rgb_array", args=args)
-env = gym.wrappers.RecordVideo(env, 'video', episode_trigger=lambda x: True, name_prefix="rl_deepc_pid")
 
 # Get system dimensions from the environment
 # u_size: dimension of action space (main engine, side engine, nozzle angle)
 # y_size: dimension of observation space (x,y pos, x,y vel, angle, ang. vel)
 u_size = 3
 y_size = 6
-
-# PID controller
-engine_pid_params = [10, 0, 10]
-side_engine_pid_params = [5, 0, 6]
-engine_vector_pid_params = [0.085, 0.001, 10.55]
-pid = PID_RocketLander(engine_pid_params, side_engine_pid_params, engine_vector_pid_params,
-                        env.action_space.low, env.action_space.high)
 
 # DeePC controller
 deepc = DeePC_Controller(
@@ -48,28 +40,26 @@ deepc = DeePC_Controller(
 #  PHASE 1: DATA COLLECTION
 # ===================================================================
 print("--- Starting Phase 1: Data Collection ---")
-state, _ = env.reset(seed=0)
-hover_center = state[:2]
-hover_center[1] -= 5
-deepc.new_episode()
 
 while not deepc.enough_data:
-    # Generate a hovering action by PID controller to explore the system dynamics
-    target = hover_center + np.random.randn(2) * 2
-    action = pid.update(state[:6], target)
-    if state[6] and state[7]:
-        action[:] = 0
-    
-    # Apply action and get the next state
-    next_state, _, done, _, _ = env.step(action)
-    
-    # Add the (action, state) pair to the DeePC buffer
-    deepc.collect_data_for_hankel(action, next_state[:6])
-    
-    # Update state and check if the episode ended
-    state = next_state
-    if done or deepc.enough_data:
-        break
+    state, _ = env.reset()
+    deepc.new_episode()
+    while True:
+        # Explore system dynamics by random action
+        action = env.action_space.sample()
+        if state[6] and state[7]:
+            action[:] = 0
+        
+        # Apply action and get the next state
+        next_state, _, done, _, _ = env.step(action)
+        
+        # Add the (action, state) pair to the DeePC buffer
+        deepc.collect_data_for_hankel(action, next_state[:6])
+        
+        # Update state and check if the episode ended
+        state = next_state
+        if done or deepc.enough_data:
+            break
 
 # Build the Hankel matrix from the collected data
 deepc.build_hankel_matrix()
@@ -81,6 +71,10 @@ print(f"Successfully built DeePC Hankel matrix with {deepc.U_p.shape[1]} columns
 # ===================================================================
 print("\n--- Starting Phase 2: DeePC Control ---")
 
+# Reset the environment
+env = gym.make("coco_rocket_lander/RocketLander-v0", render_mode="rgb_array", args=args)
+env = gym.wrappers.RecordVideo(env, 'video', episode_trigger=lambda x: True, name_prefix="rl_deepc_random")
+state, _ = env.reset(seed=0)
 # Define the target state for the rocket
 # Target: land at the landing position with zero velocity and angle
 landing_position = env.unwrapped.get_landing_position()
@@ -113,4 +107,4 @@ print("Control phase finished.")
 env.close()
 
 # Analyze the DeePC results
-deepc.analyze(figure_filename='deepc_pid.png')
+deepc.analyze(figure_filename='deepc_random.png')

@@ -15,23 +15,23 @@ class PID_Controller(ControllerBase):
         self.anti_windup_gain = anti_windup_gain
 
         self._integrator = 0.0
-        self._prev_measurement = None
+        self._prev_state = None
 
     def reset(self) -> None:
         self._integrator = 0.0
-        self._prev_measurement = None
+        self._prev_state = None
 
-    def update(self, measurement: float, target: float, dt: float = 1.0) -> float:
-        error = target - measurement
+    def update(self, state: float, target: float, dt: float = 1.0) -> float:
+        error = target - state
         # Proportional
         p = self.kp * error
         # Derivative on measurement to avoid derivative kick
-        if self._prev_measurement is None or dt <= 0:
+        if self._prev_state is None or dt <= 0:
             d = 0.0
         else:
-            d_measurement = (measurement - self._prev_measurement) / dt
-            d = self.kd * d_measurement
-        self._prev_measurement = measurement
+            d_state = (state - self._prev_state) / dt
+            d = self.kd * d_state
+        self._prev_state = state
         # Integral
         i = self._integrator
         #  Use anti-windup back-calculation to avoid further saturation

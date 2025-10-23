@@ -63,13 +63,11 @@ class DeePC_Controller(ControllerBase):
         Q: Optional[np.ndarray] = None, R: Optional[np.ndarray] = None,
         lambda_g: float = 1e-4, lambda_y: float = 1.0,
         min_output: Tuple = None, max_output: Tuple = None,
+        hankel_columns: int = None, y_labels: List[str] = None
     ) -> None:
-        # Optional DeePC Hankel blocks (set later via buffer or setter)
-        self.U_p: Optional[np.ndarray] = None
-        self.Y_p: Optional[np.ndarray] = None
-        self.U_f: Optional[np.ndarray] = None
-        self.Y_f: Optional[np.ndarray] = None
 
+        self.u_size = int(u_size)
+        self.y_size = int(y_size)
         self.T_ini = int(T_ini)
         self.T_f = int(T_f)
         self.Q = np.tile(Q, T_f) if Q is not None else np.ones((y_size * T_f,))
@@ -80,28 +78,74 @@ class DeePC_Controller(ControllerBase):
         self.lambda_y = float(lambda_y)
         self.min_output = np.array(min_output) if min_output is not None else np.full(u_size, -np.inf)
         self.max_output = np.array(max_output) if max_output is not None else np.full(u_size, np.inf)
+        self.hankel_columns = hankel_columns if hankel_columns is not None else (T_ini + T_f) * (u_size + y_size + 2)
+        self.y_labels = y_labels if y_labels is not None else [f'state[{i}]' for i in range(y_size)]
 
-        # Dimensions (inferred once data is set)
-        self.u_size = u_size
-        self.y_size = y_size
+        # Optional DeePC Hankel blocks (set later via buffer or setter)
+        self.U_p: Optional[np.ndarray] = None
+        self.Y_p: Optional[np.ndarray] = None
+        self.U_f: Optional[np.ndarray] = None
+        self.Y_f: Optional[np.ndarray] = None
+
+        # Internal sample buffer for building Hankel matrices
+        self.enough_data = False
+        self._buffer_u: List[np.ndarray] = []  # each length u_size
+        self._buffer_y: List[np.ndarray] = []  # each length y_size
 
         # Histories for initial condition (length T_ini); stored oldest->newest
-        self._u_hist = None  # shape (T_ini, m)
-        self._y_hist = None  # shape (T_ini, p)
+        self._u_hist = np.zeros((T_ini, u_size), dtype=np.float64)  # shape (T_ini, u_size)
+        self._y_hist = np.zeros((T_ini, y_size), dtype=np.float64)  # shape (T_ini, y_size)
 
-        # Internal raw data buffer for identification (store as plain Python lists)
-        self._buffer_u: List[List[float]] = []  # each length m
-        self._buffer_y: List[List[float]] = []  # each length p
+        # Analyzer variables
+        self.num_column = 4
+        self.y_preds = []
+        self.y_meas = []
+        self.y_targets = []
+        self.u_norms = []
+        self.g_norms = []
+        self.sigma_y_norms = []
 
-    def reset(self, initial_y: Union[float, Sequence[float]]) -> None:
-        # Clear histories and initialize when sizes known
-        self._u_hist = np.zeros((self.T_ini, self.u_size), dtype=np.float64)
-        self._y_hist = np.tile(np.atleast_1d(np.asarray(initial_y, dtype=np.float64)).reshape(-1), (self.T_ini, 1))
+    def reset(self) -> None:
+        # Clear Hankel matrices
+        self.U_p = None
+        self.Y_p = None
+        self.U_f = None
+        self.Y_f = None
         # Clear internal buffers to allow new data collection
+        self.enough_data = False
         self._buffer_u.clear()
         self._buffer_y.clear()
+        # Clear histories
+        self._u_hist = np.zeros((self.T_ini, self.u_size), dtype=np.float64)
+        self._y_hist = np.zeros((self.T_ini, self.y_size), dtype=np.float64)
+        self._u_mask_hist = np.zeros((self.T_ini, self.u_size), dtype=np.float64)
+        self._y_mask_hist = np.zeros((self.T_ini, self.y_size), dtype=np.float64)
+        # Clear analyzer variables
+        self.y_preds.clear()
+        self.y_meas.clear()
+        self.y_targets.clear()
+        self.u_norms.clear()
+        self.g_norms.clear()
+        self.sigma_y_norms.clear()
+    
+    def new_episode(self) -> None:
+        # Clear internal buffers to allow new data collection
+        self._buffer_u.append([])
+        self._buffer_y.append([])
+        # Initialize histories for a new episode
+        self._u_hist = np.zeros((self.T_ini, self.u_size), dtype=np.float64)
+        self._y_hist = np.zeros((self.T_ini, self.y_size), dtype=np.float64)
+        self._u_mask_hist = np.zeros((self.T_ini, self.u_size), dtype=np.float64)
+        self._y_mask_hist = np.zeros((self.T_ini, self.y_size), dtype=np.float64)
+        # Clear analyzer variables
+        self.y_preds.clear()
+        self.y_meas.clear()
+        self.y_targets.clear()
+        self.u_norms.clear()
+        self.g_norms.clear()
+        self.sigma_y_norms.clear()
 
-    def add_sample(self, u: Union[float, Sequence[float]], y: Union[float, Sequence[float]]) -> None:
+    def collect_data_for_hankel(self, u: Union[float, Sequence[float]], y: Union[float, Sequence[float]]) -> None:
         """Append one sample to the internal identification buffer.
 
         - If inputs are numpy arrays, they are converted to Python lists.
@@ -119,38 +163,61 @@ class DeePC_Controller(ControllerBase):
             raise ValueError(f"y dimension {y_vec.size} does not match expected {self.y_size}")
 
         # Store as plain lists
-        self._buffer_u.append(u_vec.tolist())
-        self._buffer_y.append(y_vec.tolist())
+        self._buffer_u[-1].append(u_vec)
+        self._buffer_y[-1].append(y_vec)
 
-    def build_hankel_from_buffer(self) -> None:
+        # Check if the number of columns in the Hankel matrix is enough
+        num_columns = 0
+        for i in range(len(self._buffer_u)):
+            if len(self._buffer_u[i]) < self.T_ini + self.T_f:
+                continue
+            num_columns += len(self._buffer_u[i]) - self.T_ini - self.T_f + 1
+        self.enough_data = num_columns >= self.hankel_columns
+
+    def build_hankel_matrix(self) -> None:
         """Build DeePC Hankel matrices from the internally buffered data."""
         if len(self._buffer_u) == 0 or len(self._buffer_y) == 0:
             raise RuntimeError("No buffered data. Call add_sample(u, y) before building Hankel matrices.")
+        if len(self._buffer_u) != len(self._buffer_y):
+            raise ValueError("The number of u and y buffers must be the same")
+        
+        U_p, Y_p, U_f, Y_f = [], [], [], []
+        for i in range(len(self._buffer_u)):
+            if len(self._buffer_u[i]) < self.T_ini + self.T_f:
+                continue
+            u = np.array(self._buffer_u[i], dtype=np.float64)
+            y = np.array(self._buffer_y[i], dtype=np.float64)
+            U_p_temp, Y_p_temp, U_f_temp, Y_f_temp = build_deepc_hankel(u, y, self.T_ini, self.T_f)
+            U_p.append(U_p_temp)
+            Y_p.append(Y_p_temp)
+            U_f.append(U_f_temp)
+            Y_f.append(Y_f_temp)
+        self.U_p = np.concatenate(U_p, axis=1)
+        self.Y_p = np.concatenate(Y_p, axis=1)
+        self.U_f = np.concatenate(U_f, axis=1)
+        self.Y_f = np.concatenate(Y_f, axis=1)
 
-        u = np.array(self._buffer_u, dtype=np.float64)
-        y = np.array(self._buffer_y, dtype=np.float64)
-        U_p, Y_p, U_f, Y_f = build_deepc_hankel(u, y, self.T_ini, self.T_f)
-        self.U_p = np.asarray(U_p, dtype=np.float64)
-        self.Y_p = np.asarray(Y_p, dtype=np.float64)
-        self.U_f = np.asarray(U_f, dtype=np.float64)
-        self.Y_f = np.asarray(Y_f, dtype=np.float64)
-
-    def update(self, measurement: Union[float, Sequence[float]], target: Union[float, Sequence[float]]) -> Union[float, np.ndarray]:
-        u_next, y_next, g, sigma_y = self._update_complete(measurement, target)
-        return u_next
-
-    def _update_complete(self, measurement: Union[float, Sequence[float]], target: Union[float, Sequence[float]]) -> Union[float, np.ndarray]:
+    def update(self, state: Union[float, Sequence[float]], target: Union[float, Sequence[float]], dt=None) -> Union[float, np.ndarray]:
+        # Check if the DeePC matrices are initialized
         if self.U_p is None or self.Y_p is None or self.U_f is None or self.Y_f is None:
             raise RuntimeError("DeePC matrices are not initialized. Build via build_hankel_from_buffer() first.")
-
-        # Build stacked b = [u_ini; y_ini; sqrt(Q) * y_ref; 0]
-        u_ini = self._u_hist.reshape(-1)
-        y_ini = self._y_hist.reshape(-1)
-
+        # Check if the state and target dimensions match the output dimension
+        y_vec = np.atleast_1d(np.asarray(state, dtype=float)).reshape(-1)
         target_vec = np.atleast_1d(np.asarray(target, dtype=float)).reshape(-1)
+        if y_vec.size != self.y_size:
+            raise ValueError(f"state dimension {y_vec.size} does not match outputs {self.y_size}")
         if target_vec.size != self.y_size:
             raise ValueError(f"target dimension {target_vec.size} does not match outputs {self.y_size}")
-        # Repeat target across prediction horizon to match Y_f @ g shape (p*T_f,)
+        
+        # Set the current state and mask
+        self._y_hist[-1] = y_vec
+        self._y_mask_hist[-1] = np.ones((self.y_size,), dtype=np.float64)
+
+        # Build stacked b = [u_ini; y_ini; U_f @ g; sqrt(Q) * y_target]
+        u_ini = self._u_hist.reshape(-1)
+        y_ini = self._y_hist.reshape(-1)
+        u_mask_ini = self._u_mask_hist.reshape(-1)
+        y_mask_ini = self._y_mask_hist.reshape(-1)
         y_target = np.tile(target_vec, self.T_f)
 
         # Define variables
@@ -165,8 +232,8 @@ class DeePC_Controller(ControllerBase):
         )
         # Define constraints
         constraints = [
-            self.U_p @ g == u_ini,
-            self.Y_p @ g == y_ini + sigma_y
+            cp.multiply(self.U_p @ g, u_mask_ini) == u_ini * u_mask_ini,
+            cp.multiply(self.Y_p @ g, y_mask_ini) == y_ini * y_mask_ini + sigma_y
         ]
 
         # Solve for g
@@ -184,76 +251,74 @@ class DeePC_Controller(ControllerBase):
         y_next = y_next[0]
 
         # Roll histories: include current measurement, and the control to be applied
-        y_vec = np.atleast_1d(np.asarray(measurement, dtype=float)).reshape(-1)
-        if y_vec.size != self.y_size:
-            raise ValueError(f"measurement dimension {y_vec.size} does not match outputs {self.y_size}")
-
-        self._y_hist = np.vstack([self._y_hist[1:, :], y_vec.reshape(1, -1)])
         self._u_hist = np.vstack([self._u_hist[1:, :], u_next.reshape(1, -1)])
+        self._u_mask_hist = np.vstack([self._u_mask_hist[1:, :], np.ones((1, self.u_size))])
 
-        return u_next, y_next, g, sigma_y
-
-class DeePC_Analyzer:
-    def __init__(self, labels: List[str]):
-        self.labels = labels + ['u norm', 'g norm', 'sigma_y norm']
-        self.num_column = 4
-
-        self.u_preds = []
-        self.y_preds = []
-        self.y_meas = []
-        self.y_targets = []
-        self.targets = []
-        self.g_norms = []
-        self.sigma_y_norms = []
-
-    def reset(self):
-        self.u_preds.clear()
-        self.y_preds.clear()
-        self.y_meas.clear()
-        self.y_targets.clear()
-        self.g_norms.clear()
-        self.sigma_y_norms.clear()
-
-    def add_sample(self, u_pred, y_pred, y_meas, y_target, g, sigma_y):
-        self.u_preds.append(np.linalg.norm(u_pred))
-        self.y_preds.append(y_pred)
-        self.y_meas.append(y_meas)
-        self.y_targets.append(y_target)
+        self.y_preds.append(y_next)
+        self.y_targets.append(target)
         self.g_norms.append(np.linalg.norm(g))
         self.sigma_y_norms.append(np.linalg.norm(sigma_y))
+
+        return u_next
     
-    def analyze(self):
-        u_preds = np.array(self.u_preds)
+    def roll_history(self, action: Union[float, Sequence[float]], next_state: Union[float, Sequence[float]]):
+        # Check if dimensions match
+        u_vec = np.atleast_1d(np.asarray(action, dtype=float)).reshape(-1)
+        y_vec = np.atleast_1d(np.asarray(next_state, dtype=float)).reshape(-1)
+        if u_vec.size != self.u_size:
+            raise ValueError(f"action dimension {u_vec.size} does not match expected {self.u_size}")
+        if y_vec.size != self.y_size:
+            raise ValueError(f"next_state dimension {y_vec.size} does not match expected {self.y_size}")
+
+        # Roll histories: include applied action and next state
+        self._u_hist = np.vstack([self._u_hist[1:, :], u_vec.reshape(1, -1)])
+        self._u_mask_hist = np.vstack([self._u_mask_hist[1:, :], np.ones((1, self.u_size))])
+        self._y_hist = np.vstack([self._y_hist[1:, :], y_vec.reshape(1, -1)])
+        self._y_mask_hist = np.vstack([self._y_mask_hist[1:, :], np.ones((1, self.y_size))])
+
+        # Record the data
+        self.u_norms.append(np.linalg.norm(u_vec))
+        self.y_meas.append(y_vec)
+    
+    def analyze(self, figure_filename: str = None):
         y_preds = np.array(self.y_preds)
         y_meas = np.array(self.y_meas)
         y_targets = np.array(self.y_targets)
+        u_norms = np.array(self.u_norms)
         g_norms = np.array(self.g_norms)
         sigma_y_norms = np.array(self.sigma_y_norms)
 
-        plt.figure()
+        # Plot the results
+        num_row = int(np.ceil((self.y_size + 3) / self.num_column))
+        plt.figure(figsize=(self.num_column * 4, num_row * 4))
+        plt.subplots_adjust(hspace=0.5)
 
         # Plot the predictions, measurements, and targets
-        for i in range(len(self.labels) - 3):
-            plt.subplot(int(np.ceil(len(self.labels) / self.num_column)), self.num_column, i + 1)
+        for i in range(self.y_size):
+            plt.subplot(num_row, self.num_column, i + 1)
             plt.plot(y_preds[:, i], label='prediction')
             plt.plot(y_meas[:, i], '-.', label='measurement')
             plt.plot(y_targets[:, i], ':', label='target')
             plt.legend()
-            plt.title(self.labels[i])
+            plt.title(self.y_labels[i])
 
-        # Plot the u predictions
-        plt.subplot(int(np.ceil(len(self.labels) / self.num_column)), self.num_column, len(self.labels) - 2)
-        plt.plot(u_preds)
-        plt.title(self.labels[-3])
+        # Plot the u norms
+        plt.subplot(num_row, self.num_column, self.y_size + 1)
+        plt.plot(u_norms)
+        plt.title('u norm')
 
         # Plot the g norms
-        plt.subplot(int(np.ceil(len(self.labels) / self.num_column)), self.num_column, len(self.labels) - 1)
+        plt.subplot(num_row, self.num_column, self.y_size + 2)
         plt.plot(g_norms)
-        plt.title(self.labels[-2])
+        plt.title('g norm')
 
         # Plot the sigma_y norms
-        plt.subplot(int(np.ceil(len(self.labels) / self.num_column)), self.num_column, len(self.labels))
+        plt.subplot(num_row, self.num_column, self.y_size + 3)
         plt.plot(sigma_y_norms)
-        plt.title(self.labels[-1])
+        plt.title('sigma_y norm')
 
+        # Save the figure
+        if figure_filename is not None:
+            plt.savefig(figure_filename, dpi=300, bbox_inches='tight')
+        
         plt.show()

@@ -7,5 +7,5 @@ class ControllerBase(ABC):
         pass
 
     @abstractmethod
-    def update(self, measurement, target, dt: float):
+    def update(self, state, target, dt: float):
         pass
