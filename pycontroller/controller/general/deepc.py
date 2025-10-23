@@ -43,20 +43,34 @@ def build_deepc_hankel(u: np.ndarray, y: np.ndarray, T_ini: int, T_f: int) -> Tu
 
 class DeePC_Controller(ControllerBase):
     """
-    Data-enabled Predictive Control (DeePC) for SISO/MIMO systems using
-    a regularized least-squares formulation (no external QP dependency).
+    Data-enabled Predictive Control (DeePC).
 
-    It minimizes over g:
-        ||U_p g - u_ini||^2 + ||Y_p g - y_ini||^2
-        + ||sqrt(Q) (Y_f g - y_ref)||^2 + ||sqrt(R) U_f g||^2 + lambda_g ||g||^2
+    This controller uses previously collected input-output data from a system to
+    compute an optimal control policy without requiring an explicit mathematical model.
+    It is based on the assumption that the system is linear time-invariant (LTI)
+    and that any future trajectory can be represented by a linear combination of
+    past trajectories stored in a Hankel matrix.
 
-    Control applied is the first input block of U_f g, clipped to limits.
+    The optimization problem is formulated as a Quadratic Program (QP) with the
+    following components:
 
-    New features:
-      - Supports multi-dimensional inputs and outputs (MIMO)
-      - Internal data buffer: call reset(), then add_sample(u, y) repeatedly;
-        when finished, call build_hankel_from_buffer() to prepare matrices
-        without external helpers.
+    Decision Variables:
+    - g: The primary decision variable, representing the weights used to combine
+      past trajectories to predict the future.
+    - sigma_y: A slack variable that allows for a "soft" matching of the initial
+      output condition, adding robustness against noise.
+
+    Objective Function:
+    min ||Y_f g - y_ref||^2_Q + ||U_f g||^2_R + lambda_g ||g||^2 + lambda_y ||sigma_y||^2
+
+    Constraints:
+    - U_p g = u_ini  (hard constraint for initial inputs)
+    - Y_p g = y_ini + sigma_y (soft constraint for initial outputs)
+
+    This implementation includes:
+    - Support for MIMO systems.
+    - An internal data buffer for convenient data collection.
+    - Regularization terms and slack variables for robustness.
     """
 
     def __init__(self, u_size: int, y_size: int, T_ini: int = 1, T_f: int = 1,
@@ -65,6 +79,32 @@ class DeePC_Controller(ControllerBase):
         min_output: Tuple = None, max_output: Tuple = None,
         hankel_columns: int = None, y_labels: List[str] = None
     ) -> None:
+        """
+        Initializes the DeePC controller.
+
+        Args:
+            u_size (int): The dimension of the control input vector u.
+            y_size (int): The dimension of the system output vector y.
+            T_ini (int): The number of past time steps to use for the initial condition.
+            T_f (int): The number of future time steps in the prediction horizon.
+            Q (Optional[np.ndarray]): The weighting matrix for the output tracking error.
+                If None, defaults to an identity matrix. Shape (y_size,).
+            R (Optional[np.ndarray]): The weighting matrix for the control effort.
+                If None, defaults to an identity matrix. Shape (u_size,).
+            lambda_g (float): The regularization weight for the g vector to prevent
+                overfitting and improve numerical stability.
+            lambda_y (float): The regularization weight for the slack variable sigma_y,
+                which allows for soft-constraint satisfaction of the initial output.
+            min_output (Tuple): A tuple specifying the minimum allowable values for
+                each control input.
+            max_output (Tuple): A tuple specifying the maximum allowable values for
+                each control input.
+            hankel_columns (int): The minimum number of columns required in the Hankel
+                matrix before the controller considers the data sufficient. If None,
+                a default value is calculated based on system dimensions.
+            y_labels (List[str]): A list of strings to be used as labels for the
+                output variables in plots.
+        """
 
         self.u_size = int(u_size)
         self.y_size = int(y_size)
@@ -106,6 +146,13 @@ class DeePC_Controller(ControllerBase):
         self.sigma_y_norms = []
 
     def reset(self) -> None:
+        """
+        Resets the controller to its initial state.
+
+        This method clears all data, including Hankel matrices, internal buffers,
+        and historical data. It should be called before starting a new data
+        collection phase from scratch.
+        """
         # Clear Hankel matrices
         self.U_p = None
         self.Y_p = None
@@ -129,6 +176,12 @@ class DeePC_Controller(ControllerBase):
         self.sigma_y_norms.clear()
     
     def new_episode(self) -> None:
+        """
+        Prepares the controller for a new episode.
+
+        This method should be called at the beginning of each new data collection
+        run. It creates new buffers for data and resets histories and analyzer variables.
+        """
         # Clear internal buffers to allow new data collection
         self._buffer_u.append([])
         self._buffer_y.append([])
@@ -198,6 +251,24 @@ class DeePC_Controller(ControllerBase):
         self.Y_f = np.concatenate(Y_f, axis=1)
 
     def update(self, state: Union[float, Sequence[float]], target: Union[float, Sequence[float]], dt=None) -> Union[float, np.ndarray]:
+        """
+        Computes the optimal control action for the current state.
+
+        This method solves the DeePC optimization problem to find the best control
+        action that steers the system towards the target. It uses the historical
+        data (`u_hist`, `y_hist`) as the initial condition.
+
+        Args:
+            state (Union[float, Sequence[float]]): The current measurement of the
+                system output (y_k).
+            target (Union[float, Sequence[float]]): The desired reference value for
+                the system output (y_ref).
+            dt (float, optional): Time step. Not used in this controller.
+
+        Returns:
+            Union[float, np.ndarray]: The first control action (u_k) from the
+            optimal future input sequence.
+        """
         # Check if the DeePC matrices are initialized
         if self.U_p is None or self.Y_p is None or self.U_f is None or self.Y_f is None:
             raise RuntimeError("DeePC matrices are not initialized. Build via build_hankel_from_buffer() first.")
@@ -262,6 +333,17 @@ class DeePC_Controller(ControllerBase):
         return u_next
     
     def roll_history(self, action: Union[float, Sequence[float]], next_state: Union[float, Sequence[float]]):
+        """
+        Updates the history of inputs and outputs with the latest data.
+
+        This should be called after applying an action to the system and observing
+        the next state. It updates the `_u_hist` and `_y_hist` buffers, which are
+        used as the initial condition in the next `update` call.
+
+        Args:
+            action (Union[float, Sequence[float]]): The control action that was applied.
+            next_state (Union[float, Sequence[float]]): The resulting system output.
+        """
         # Check if dimensions match
         u_vec = np.atleast_1d(np.asarray(action, dtype=float)).reshape(-1)
         y_vec = np.atleast_1d(np.asarray(next_state, dtype=float)).reshape(-1)
@@ -281,6 +363,16 @@ class DeePC_Controller(ControllerBase):
         self.y_meas.append(y_vec)
     
     def analyze(self, figure_filename: str = None):
+        """
+        Plots the results of the control episode.
+
+        Generates and displays plots for output predictions vs. measurements,
+        control input norms, g vector norms, and slack variable norms.
+
+        Args:
+            figure_filename (str, optional): If provided, the plot is saved to
+                this file.
+        """
         y_preds = np.array(self.y_preds)
         y_meas = np.array(self.y_meas)
         y_targets = np.array(self.y_targets)
