@@ -1,5 +1,6 @@
-# Video files
+# Data files
 video/
+figure/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -1,6 +1,7 @@
 import gymnasium as gym
 import numpy as np
-from pycontroller.controller import MPC_RocketLander
+from pycontroller.controller import MPC_Controller
+from pycontroller.env.rocket_lander.system_model import RocketLanderSystemModel
 
 args = {
     "initial_position": (0.5, 0.9, 0.4)
@@ -18,7 +19,15 @@ Q = np.diag([3.0, 0.1, 2.0, 1.0, 120.0, 30.0])
 R = np.diag([0.01, 0.01, 0.01])
 
 # MPC controller
-mpc = MPC_RocketLander(env, horizon, sample_time, Q, R)
+model = RocketLanderSystemModel(env)
+model.calculate_linear_system_matrices()
+model.discretize_system_matrices(sample_time)
+A, B = model.get_discrete_linear_system_matrices()
+min_output = env.action_space.low
+max_output = env.action_space.high
+min_state = np.array([0, 0, -np.inf, -np.inf, -env.unwrapped.cfg.theta_limit, -np.inf], dtype=np.float64)
+max_state = np.array([env.unwrapped.cfg.width, env.unwrapped.cfg.height, np.inf, np.inf, env.unwrapped.cfg.theta_limit, np.inf], dtype=np.float64)
+mpc = MPC_Controller(A, B, horizon, Q, R, min_output, max_output, min_state, max_state)
 
 # Define the target state for the rocket
 # Target: land at the landing position with zero velocity and angle

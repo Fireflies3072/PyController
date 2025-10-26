@@ -2,23 +2,19 @@ import gymnasium as gym
 import numpy as np
 from pycontroller import DeePC_Controller
 
-args = {
-    "initial_position": (0.5, 0.8, 0.0)
-}
-
 # --- Configuration ---
 # DeePC Parameters
-T_ini = 1
-T_f = 10
+T_ini = 3
+T_f = 5
 
 # --- Environment Setup ---
-env = gym.make("coco_rocket_lander/RocketLander-v0", render_mode="rgb_array", args=args)
+env = gym.make("InvertedPendulum-v5", render_mode="rgb_array")
 
 # Get system dimensions from the environment
 # u_size: dimension of action space (main engine, side engine, nozzle angle)
 # y_size: dimension of observation space (x,y pos, x,y vel, angle, ang. vel)
-u_size = 3
-y_size = 6
+u_size = 1
+y_size = 4
 
 # DeePC controller
 deepc = DeePC_Controller(
@@ -26,14 +22,14 @@ deepc = DeePC_Controller(
     y_size=y_size,
     T_ini=T_ini,
     T_f=T_f,
-    Q=[10, 10, 1, 1, 1e3, 1],
-    R=[1.5, 0.01, 0.01],
+    Q=[1, 100, 1, 1],
+    R=[0.1],
     lambda_g=1e-2,
     lambda_y=1e5,
     min_output=env.action_space.low,
     max_output=env.action_space.high,
-    hankel_columns=None,
-    y_labels=['x', 'y', 'vx', 'vy', 'angle', 'ang_vel']
+    hankel_columns=2000,
+    y_labels=['x', 'theta', 'x_dot', 'theta_dot']
 )
 
 # ===================================================================
@@ -47,14 +43,12 @@ while not deepc.enough_data:
     while True:
         # Explore system dynamics by random action
         action = env.action_space.sample()
-        if state[6] and state[7]:
-            action[:] = 0
         
         # Apply action and get the next state
         next_state, _, done, _, _ = env.step(action)
         
         # Add the (action, state) pair to the DeePC buffer
-        deepc.collect_data_for_hankel(action, next_state[:6])
+        deepc.collect_data_for_hankel(action, next_state[:4])
         
         # Update state and check if the episode ended
         state = next_state
@@ -72,31 +66,23 @@ print(f"Successfully built DeePC Hankel matrix with {deepc.U_p.shape[1]} columns
 print("\n--- Starting Phase 2: DeePC Control ---")
 
 # Reset the environment
-env = gym.make("coco_rocket_lander/RocketLander-v0", render_mode="rgb_array", args=args)
-env = gym.wrappers.RecordVideo(env, 'video', episode_trigger=lambda x: True, name_prefix="rl_deepc_random")
+env = gym.make("InvertedPendulum-v5", render_mode="rgb_array")
+env = gym.wrappers.RecordVideo(env, 'video', episode_trigger=lambda x: True, name_prefix="ip_deepc_random")
 state, _ = env.reset(seed=0)
 # Define the target state for the rocket
 # Target: land at the landing position with zero velocity and angle
-landing_position = env.unwrapped.get_landing_position()
 target = np.zeros(y_size)
-target[0] = landing_position[0]
-target[1] = landing_position[1]
 
 # Initialize the DeePC controller for a new episode
 deepc.new_episode()
 
 for i in range(2000):
     # Let DeePC calculate the optimal action
-    action = deepc.update(state[:6], target)
-    # If the legs are in contact, set both main and side engine thrusts to 0
-    if state[6] and state[7]:
-        action[:] = 0
-    
+    action = deepc.update(state, target)
     # Apply action and get the next state
     next_state, rewards, done, _, info = env.step(action)
-
     # Roll the history
-    deepc.roll_history(action, next_state[:6])
+    deepc.roll_history(action, next_state)
 
     # Update state
     state = next_state

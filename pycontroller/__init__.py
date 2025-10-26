@@ -8,4 +8,4 @@ except Exception:
     pass
 
 # Re-export commonly used controllers for convenience
-from .controller import PID_Controller, DeePC_Controller, PID_RocketLander, MPC_RocketLander
+from .controller import PID_Controller, MPC_Controller, DeePC_Controller

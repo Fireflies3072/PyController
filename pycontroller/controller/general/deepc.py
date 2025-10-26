@@ -2,6 +2,7 @@ from typing import List, Optional, Tuple, Sequence, Union
 import numpy as np
 import cvxpy as cp
 import matplotlib.pyplot as plt
+import os
 
 from .controller_base import ControllerBase
 
@@ -411,6 +412,7 @@ class DeePC_Controller(ControllerBase):
 
         # Save the figure
         if figure_filename is not None:
+            os.makedirs(os.path.dirname(figure_filename), exist_ok=True)
             plt.savefig(figure_filename, dpi=300, bbox_inches='tight')
         
         plt.show()

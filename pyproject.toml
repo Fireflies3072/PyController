@@ -18,6 +18,7 @@ dependencies = [
     "matplotlib",
     "scipy",
     "cvxpy",
+    "moviepy",
     "gymnasium[box2d,mojoco]",
 ]
 
