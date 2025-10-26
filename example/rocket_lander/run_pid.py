@@ -1,6 +1,6 @@
 import gymnasium as gym
 import numpy as np
-from pycontroller import PID_RocketLander
+from pycontroller.controller import PID_RocketLander
 
 args = {
 }

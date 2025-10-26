@@ -22,13 +22,13 @@ deepc = DeePC_Controller(
     y_size=y_size,
     T_ini=T_ini,
     T_f=T_f,
-    Q=[10.0],
+    Q=[1.0],
     R=[0.01],
     lambda_g=1e-2,
     lambda_y=1e5,
     min_output=env.action_space.low,
     max_output=env.action_space.high,
-    hankel_columns=None,
+    hankel_columns=100,
     y_labels=['T_current']
 )
 
@@ -92,4 +92,4 @@ print("Control phase finished.")
 env.close()
 
 # Analyze the DeePC results
-deepc.analyze(figure_filename='figure/deepc_random.png')
+deepc.analyze(figure_filename='figure/rt_deepc_random.png')

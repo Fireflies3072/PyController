@@ -1,6 +1,7 @@
 import gymnasium as gym
 import numpy as np
-from pycontroller import PID_RocketLander, DeePC_Controller
+from pycontroller.controller import PID_RocketLander
+from pycontroller import DeePC_Controller
 
 args = {
     "initial_position": (0.5, 0.8, 0.0)
@@ -113,4 +114,4 @@ print("Control phase finished.")
 env.close()
 
 # Analyze the DeePC results
-deepc.analyze(figure_filename='figure/deepc_pid.png')
+deepc.analyze(figure_filename='figure/rl_deepc_pid.png')

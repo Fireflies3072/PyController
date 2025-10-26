@@ -1,6 +1,6 @@
 import gymnasium as gym
 import numpy as np
-from pycontroller.controller import MPC_Controller
+from pycontroller import MPC_Controller
 from pycontroller.env.rocket_lander.system_model import RocketLanderSystemModel
 
 args = {

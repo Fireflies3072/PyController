@@ -166,10 +166,9 @@ Check `example/rocket_lander/run_deepc_random.py` and `example/rocket_lander/run
 
 We are planning to expand the library with more environments and examples:
 
-*   **Room Temperature Control**: A new environment to simulate and control the temperature in a room.
-*   **Inverted Pendulum**: Add examples for the classic inverted pendulum control problem.
+*   **Inverted Pendulum**: The current examples don't work well. We will tune parameters or try new algorithms to make them work better.
 
-## Appreciation
+## Acknowledgement
 
 The Rocket Lander environment is a Box2D Gymnasium environment which simulates a Falcon 9 ocean barge landing.
 

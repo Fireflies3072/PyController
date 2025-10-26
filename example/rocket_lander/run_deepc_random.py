@@ -107,4 +107,4 @@ print("Control phase finished.")
 env.close()
 
 # Analyze the DeePC results
-deepc.analyze(figure_filename='figure/deepc_random.png')
+deepc.analyze(figure_filename='figure/rl_deepc_random.png')
